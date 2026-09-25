@@ -1,0 +1,5 @@
+.threads-profile/
+output/
+__pycache__/
+.venv/
+.env
