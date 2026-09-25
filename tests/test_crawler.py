@@ -11,6 +11,41 @@ import threads_irent as crawler
 
 
 class CrawlerTests(unittest.TestCase):
+    def test_global_limit(self):
+        batch = [{'permalink': f'https://www.threads.com/@a/post/P{i}',
+                  'text': 'irent 很好用' if i % 2 else 'irent 很爛'} for i in range(45)]
+        raw, scanned = [], set()
+        crawler.collect_batch(batch[:20], raw, scanned, 30, 'test', 'first')
+        crawler.collect_batch(batch, raw, scanned, 30, 'test', 'second')
+        self.assertEqual(len(raw), 30)
+        self.assertEqual(len(crawler.prepare(raw, [])), 15)
+
+    def test_api_limit(self):
+        args = argparse.Namespace(query=['irent', 'irent 爛'], pages=5, delay=1, max_posts=30)
+        payload = {'data': [{'permalink': f'https://www.threads.com/@a/post/P{i}', 'text': 'irent 爛'} for i in range(35)],
+                   'paging': {'cursors': {'after': 'NEXT'}}}
+        raw, warnings = [], []
+        with patch.dict('os.environ', {'THREADS_ACCESS_TOKEN': 'secret'}), \
+             patch('threads_irent.urlopen', return_value=io.StringIO(json.dumps(payload))) as request:
+            crawler.api_collect(args, raw, warnings)
+            self.assertEqual(request.call_count, 1)
+            self.assertIn('limit=30', request.call_args.args[0].full_url)
+            self.assertEqual(len(raw), 30)
+
+    def test_word_content(self):
+        from docx import Document
+        from word_export import export_word
+        content = 'irent 客服很爛。' * 30
+        url = 'https://www.threads.com/@a/post/ABC'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'result.docx'
+            export_word([{'text': content, 'permalink': url}], path, '完成', 1)
+            doc = Document(path)
+            paragraphs = doc.paragraphs
+            index = next(i for i, p in enumerate(paragraphs) if content in p.text)
+            self.assertIn(url, paragraphs[index + 1]._p.xml)
+            self.assertTrue(any(r.target_ref == url for r in doc.part.rels.values()))
+
     def test_canonical_and_dedup(self):
         url = 'https://www.threads.net/@person/post/ABC?x=1'
         self.assertEqual(crawler.canonical_url(url), 'https://www.threads.com/@person/post/ABC')
@@ -45,7 +80,7 @@ class CrawlerTests(unittest.TestCase):
             self.assertEqual(data['results'][0]['number'], 1)
 
     def test_api_pagination_and_partial_failure(self):
-        args = argparse.Namespace(query=['irent'], pages=3, delay=1)
+        args = argparse.Namespace(query=['irent'], pages=3, delay=1, max_posts=30)
         first = {'data': [{'text': 'irent 爛', 'permalink': 'https://www.threads.com/@x/post/A'}],
                  'paging': {'cursors': {'after': 'NEXT'}}}
         raw, warnings = [], []

@@ -68,6 +68,7 @@ def prepare(raw: list[dict], extra: list[str]) -> list[dict]:
 
 
 def api_collect(args, raw, warnings):
+    scanned = set()
     token = os.environ.get('THREADS_ACCESS_TOKEN', '').strip()
     if not token:
         raise RuntimeError('API 模式需要環境變數 THREADS_ACCESS_TOKEN，且具備 threads_keyword_search 權限。')
@@ -76,7 +77,7 @@ def api_collect(args, raw, warnings):
         seen = set()
         for _ in range(args.pages):
             params = {'q': query, 'search_type': 'RECENT', 'search_mode': 'KEYWORD',
-                      'fields': 'id,text,permalink,timestamp', 'limit': 50}
+                      'fields': 'id,text,permalink,timestamp', 'limit': min(50, args.max_posts - len(scanned))}
             if cursor:
                 params['after'] = cursor
             request = Request('https://graph.threads.net/keyword_search?' + urlencode(params),
@@ -93,8 +94,11 @@ def api_collect(args, raw, warnings):
             if 'error' in payload:
                 raise RuntimeError('Threads API 回傳錯誤，請檢查權限與 Token。')
             batch = payload.get('data', [])
-            raw.extend({**item, 'source': 'Threads API', 'query': query} for item in batch)
+            collect_batch(batch, raw, scanned, args.max_posts, 'Threads API', query)
             print(f'搜尋 {query}：本頁取得 {len(batch)} 筆', flush=True)
+            if len(scanned) >= args.max_posts:
+                warnings.append(f'已達本次 {args.max_posts} 篇不重複貼文上限，停止搜尋。')
+                return
             cursor = payload.get('paging', {}).get('cursors', {}).get('after')
             if not batch or not cursor or cursor in seen:
                 break
@@ -132,7 +136,20 @@ EXTRACT = r'''() => {
 }'''
 
 
+def collect_batch(batch, raw, scanned, limit, source, query):
+    """Count unique posts before sentiment filtering, across all queries."""
+    for item in batch:
+        if len(scanned) >= limit:
+            break
+        url = canonical_url(item.get('permalink', ''))
+        if not url or post_key(url) in scanned:
+            continue
+        scanned.add(post_key(url))
+        raw.append({**item, 'permalink': url, 'source': source, 'query': query})
+
+
 def browser_collect(args, raw, warnings):
+    scanned = set()
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -167,10 +184,14 @@ def browser_collect(args, raw, warnings):
                     page.wait_for_timeout(args.delay * 1000)
                     batch = page.evaluate(EXTRACT)
                     before = len(seen)
-                    branded = [item for item in batch if BRAND.search(unicodedata.normalize('NFKC', item['text']))]
-                    raw.extend({**item, 'source': 'Threads 網頁文字（可能含介面文字）', 'query': query} for item in branded)
+                    collect_batch(batch, raw, scanned, args.max_posts, 'Threads 網頁文字（可能含介面文字）', query)
+                    branded = [item for item in raw if BRAND.search(unicodedata.normalize('NFKC', item['text']))]
                     relevant.update(item['permalink'] for item in branded)
                     seen.update(post_key(item['permalink'].split('?')[0].rstrip('/')) for item in batch)
+                    print(f'  已讀取 {len(scanned)}/{args.max_posts} 篇；疑似負評 {len(prepare(raw, args.negative_word))} 篇', flush=True)
+                    if len(scanned) >= args.max_posts:
+                        warnings.append(f'已達本次 {args.max_posts} 篇不重複貼文上限，停止搜尋。')
+                        return
                     body = page.locator('body').inner_text()
                     login_gate = any(label in body for label in ['登入以取得更多', 'Log in to see more', 'Log in to view more'])
                     if login_gate and not relevant:
@@ -214,6 +235,8 @@ def export(raw, rows, warnings, output, status):
         lines.extend([f'{r["number"]}. {r["title"]}', f'   {r["permalink"]}', ''])
     lines.extend(['注意：關鍵詞篩選需人工確認，不保證完整。', *warnings])
     (output / 'results.txt').write_text('\n'.join(lines), encoding='utf-8')
+    from word_export import export_word
+    export_word(rows, output / 'results.docx', status, len(raw))
 
 
 def positive(value):
@@ -233,6 +256,7 @@ def main():
     parser.add_argument('--negative-word', action='append', default=[], help='新增負評關鍵詞')
     parser.add_argument('--scrolls', type=positive, default=15)
     parser.add_argument('--pages', type=positive, default=5)
+    parser.add_argument('--max-posts', type=positive, default=30, help='跨搜尋詞合計讀取上限，去重後計算，預設 30 篇（非負評數量）')
     parser.add_argument('--delay', type=positive, default=3)
     parser.add_argument('--output', type=Path, default=ROOT / 'output')
     args = parser.parse_args()
@@ -255,8 +279,12 @@ def main():
     rows = prepare(raw, args.negative_word)
     if not raw and not failed:
         status = '未取得文章（無法據此判定沒有負評）'
-    export(raw, rows, warnings, args.output.resolve(), status)
-    print(f'{status}：{len(rows)} 筆疑似負評。\n結果：{args.output.resolve() / "results.html"}')
+    try:
+        export(raw, rows, warnings, args.output.resolve(), status)
+    except (ImportError, PermissionError) as exc:
+        print('Word 匯出失敗：請確認已安裝 requirements.txt 的套件，並關閉正在開啟的 results.docx 後重試。其他格式已保存。')
+        return 1
+    print(f'{status}：{len(rows)} 筆疑似負評。\nWord：{args.output.resolve() / "results.docx"}')
     for warning in warnings:
         print('注意：' + warning)
     return 1 if failed else 0
