@@ -14,7 +14,7 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_QUERIES = ['irent', 'iRent 客服', 'irent 爛', 'irent 扣款', 'irent 故障', '和雲 行動服務']
+DEFAULT_QUERIES = ['irent', 'iRent 客服', 'irent 爛', 'irent 扣款', 'irent 故障', 'irent 退款', 'irent 還車', 'irent 拖吊', 'irent 抱怨', '和雲 行動服務']
 NEGATIVE = ['抱怨', '爛', '烂', '雷', '糟', '差勁', '失望', '不滿', '不爽', '生氣',
             '傻眼', '扯', '垃圾', '噁心', '惡劣', '離譜', '崩潰', '後悔', '受不了',
             '不推薦', '不推', '拒用', '抵制', '投訴', '申訴', '客訴', '踩雷',
@@ -94,7 +94,8 @@ def api_collect(args, raw, warnings):
             if 'error' in payload:
                 raise RuntimeError('Threads API 回傳錯誤，請檢查權限與 Token。')
             batch = payload.get('data', [])
-            collect_batch(batch, raw, scanned, args.max_posts, 'Threads API', query)
+            if consume_batch(args, batch, raw, scanned, 'Threads API', query):
+                return
             print(f'搜尋 {query}：本頁取得 {len(batch)} 筆', flush=True)
             if len(scanned) >= args.max_posts:
                 warnings.append(f'已達本次 {args.max_posts} 篇不重複貼文上限，停止搜尋。')
@@ -148,6 +149,30 @@ def collect_batch(batch, raw, scanned, limit, source, query):
         raw.append({**item, 'permalink': url, 'source': source, 'query': query})
 
 
+def consume_batch(args, batch, raw, scanned, source, query):
+    tracker = getattr(args, 'tracker', None)
+    if tracker is None:
+        collect_batch(batch, raw, scanned, args.max_posts, source, query)
+        return False
+    new_links = []
+    for item in batch:
+        if len(scanned) >= args.max_posts or len(tracker['links']) >= args.target_links:
+            break
+        url = canonical_url(item.get('permalink', ''))
+        if not url or post_key(url) in tracker['keys'] or post_key(url) in scanned:
+            continue
+        collect_batch([item], raw, scanned, args.max_posts, source, query)
+        matches = prepare([item], args.negative_word)
+        if matches:
+            new_links.extend(matches)
+            tracker['keys'].add(post_key(url))
+            tracker['links'].append({'permalink': url})
+    if new_links:
+        tracker['links'] = update_link_history(new_links, args.output)
+    print(f'累積連結 {len(tracker["links"])}/{args.target_links}；本次處理新貼文 {len(scanned)} 篇', flush=True)
+    return len(tracker['links']) >= args.target_links
+
+
 def browser_collect(args, raw, warnings):
     scanned = set()
     try:
@@ -184,8 +209,9 @@ def browser_collect(args, raw, warnings):
                     page.wait_for_timeout(args.delay * 1000)
                     batch = page.evaluate(EXTRACT)
                     before = len(seen)
-                    collect_batch(batch, raw, scanned, args.max_posts, 'Threads 網頁文字（可能含介面文字）', query)
-                    branded = [item for item in raw if BRAND.search(unicodedata.normalize('NFKC', item['text']))]
+                    if consume_batch(args, batch, raw, scanned, 'Threads 網頁文字（可能含介面文字）', query):
+                        return
+                    branded = [item for item in batch if BRAND.search(unicodedata.normalize('NFKC', item['text']))]
                     relevant.update(item['permalink'] for item in branded)
                     seen.update(post_key(item['permalink'].split('?')[0].rstrip('/')) for item in batch)
                     print(f'  已讀取 {len(scanned)}/{args.max_posts} 篇；疑似負評 {len(prepare(raw, args.negative_word))} 篇', flush=True)
@@ -285,9 +311,10 @@ def main():
     parser.add_argument('--channel', choices=['chrome', 'msedge'], default='chrome')
     parser.add_argument('--query', action='append', help='可重複指定，取代預設搜尋詞')
     parser.add_argument('--negative-word', action='append', default=[], help='新增負評關鍵詞')
-    parser.add_argument('--scrolls', type=positive, default=15)
-    parser.add_argument('--pages', type=positive, default=5)
-    parser.add_argument('--max-posts', type=positive, default=60, help='跨搜尋詞合計讀取上限，去重後計算，預設 60 篇（非負評數量）')
+    parser.add_argument('--scrolls', type=positive, default=150)
+    parser.add_argument('--pages', type=positive, default=40)
+    parser.add_argument('--max-posts', type=positive, default=2000, help='單次處理新貼文的安全上限，預設 2000')
+    parser.add_argument('--target-links', type=positive, default=100, help='歷次累積的不重複負評連結目標，預設 100')
     parser.add_argument('--delay', type=positive, default=3)
     parser.add_argument('--output', type=Path, default=ROOT / 'output')
     args = parser.parse_args()
@@ -298,7 +325,16 @@ def main():
     status = '完成本次擷取（非完整全站資料）'
     failed = False
     try:
-        (api_collect if args.source == 'api' else browser_collect)(args, raw, warnings)
+        args.output = args.output.resolve()
+        args.output.mkdir(parents=True, exist_ok=True)
+        history = update_link_history([], args.output)
+        args.tracker = {'links': history, 'keys': {post_key(r['permalink']) for r in history}}
+        if len(history) < args.target_links:
+            (api_collect if args.source == 'api' else browser_collect)(args, raw, warnings)
+        if len(args.tracker['links']) >= args.target_links:
+            status = f'已達累積 {args.target_links} 個連結目標'
+        else:
+            status = f'本次搜尋結束，累積 {len(args.tracker["links"])}/{args.target_links} 個連結，尚未達標'
     except KeyboardInterrupt:
         failed = True
         status = '使用者中止，保存部分資料'
@@ -308,7 +344,7 @@ def main():
         # Avoid dumping network URLs or browser diagnostics that could contain secrets.
         warnings.append(str(exc) if isinstance(exc, RuntimeError) else f'{type(exc).__name__}：讀取失敗，請檢查網路、瀏覽器是否已安裝，或關閉上次的工具瀏覽器後重試。')
     rows = prepare(raw, args.negative_word)
-    if not raw and not failed:
+    if not raw and not failed and not getattr(args, 'tracker', {}).get('links'):
         status = '未取得文章（無法據此判定沒有負評）'
     try:
         export(raw, rows, warnings, args.output.resolve(), status)

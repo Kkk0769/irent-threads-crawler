@@ -11,6 +11,23 @@ import threads_irent as crawler
 
 
 class CrawlerTests(unittest.TestCase):
+    def test_target_skips_old_and_stops_exactly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            old = [{'permalink': f'https://www.threads.com/@a/post/P{i}'} for i in range(98)]
+            history = crawler.update_link_history(old, output)
+            args = argparse.Namespace(output=output, target_links=100, max_posts=2000, negative_word=[],
+                                      tracker={'links': history, 'keys': {crawler.post_key(r['permalink']) for r in history}})
+            batch = [{'permalink': f'https://www.threads.com/@a/post/P{i}', 'text': 'irent 很爛'} for i in range(110)]
+            raw, scanned = [], set()
+            self.assertTrue(crawler.consume_batch(args, batch, raw, scanned, 'test', 'irent'))
+            self.assertEqual(len(raw), 2)
+            saved = crawler.update_link_history([], output)
+            self.assertEqual(len(saved), 100)
+            self.assertEqual(saved[-1]['number'], 100)
+            self.assertTrue(crawler.consume_batch(args, batch, raw, scanned, 'test', 'irent'))
+            self.assertEqual(len(raw), 2)
+
     def test_global_limit(self):
         batch = [{'permalink': f'https://www.threads.com/@a/post/P{i}',
                   'text': 'irent 很好用' if i % 2 else 'irent 很爛'} for i in range(45)]

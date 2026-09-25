@@ -1,37 +1,35 @@
 # Threads iRent 負評連結工具
 
-每次最多處理 60 篇不重複貼文，篩選疑似負評，Word 只放「序號＋可點擊網址」，每筆一行。
+目標累積 100 個不重複的疑似負評連結，固定輸出到同一份 output/results.docx。Word 每行只有「序號＋可點擊網址」，保留舊連結並接續編號。
 
 ## 使用
 
-需要 Python 3.10 以上及 Chrome。雙擊 start.cmd，在工具瀏覽器登入 Threads，回到命令視窗按 Enter。完成後自動開啟 output/results.docx。執行前請先關閉上次的 Word，避免無法覆寫。
-
-手動執行：
+需要 Python 3.10 以上及 Chrome。雙擊 start.cmd，在瀏覽器登入 Threads，再回到命令視窗按 Enter。完成後自動開啟同一份 Word。執行前請關閉 Word 結果檔，避免被鎖定。
 
 ```powershell
 python -m pip install -r requirements.txt
-python threads_irent.py --login --max-posts 60
+python threads_irent.py --login --target-links 100
 ```
 
 已登入可省略 --login。使用 Edge 可加 --channel msedge。
 
-## 自動接續
+## 累積與停止
 
-output/link_history.json 保存历次負評網址。每次加入新網址後重新產生 Word，保留舊連結並排除重複。例如原有 5 筆，下次第一筆新網址編為 6，接著是 7。第一次使用新版會自動匯入同目錄舊 results.json 的結果。
+output/link_history.json 保存歷次連結。首次使用會匯入同目錄舊 results.json。每批新連結都會立即保存歷史紀錄；正常結束或 Ctrl+C 中止時重建同一份 Word。Word 若被鎖住，歷史仍保留，下次執行會重新產生。程式不讀取手動修改的 Word，請保留歷史檔並使用同一目錄。
 
-請保留 link_history.json 並使用同一個輸出目錄。程式依此檔案接續，不會讀取手動編輯的 Word。用 --output 指定新目錄會建立獨立清單。歷史檔損壞時停止匯出以免覆蓋舊資料。
+原有 5 筆時，新連結從第 6 筆開始；累積到 100 筆就停止，不是讀取 100 篇就停止。已達目標的再次執行只更新匯出，不開瀏覽器搜尋。若原本已有超過 100 筆，不刪除舊紀錄。
 
-Word 僅放序號與網址。results.json、results.html、results.txt 與 raw.json 保留當次結果及診斷，下次會覆寫。歷史清單、結果與 .threads-profile 登入資料只保存在本機，不上傳 GitHub。
+搜尋頁仍從平台提供的起點顯示，但已收錄的網址會跳過且不占當次新貼文額度。工具繼續往下捲並搜尋多組關鍵詞，不能保證回到上次的精準位置，也不保證能取得 100 個結果。歷史清單只記錄入選連結，先前未入選的文章可能再次被檢查。
 
-## 範圍
+預設每詞最多捲動 150 次，API 每詞最多 40 頁，當次最多處理 2000 篇新的不重複貼文作為安全界限。可用 --scrolls、--pages、--max-posts 調整。平台限制、登入提示、無更多結果或達安全界限時會保存進度並顯示尚未達標，下次再繼續累積。這些設定不解除平台限制。
 
-60 篇是跨搜尋詞去重後、負評篩選前的當次處理上限，不保證取得 60 篇負評或 60 個新連結。歷次收錄的貼文仍可能出現在搜尋結果並占當次額度，但不會重複加入 Word。累積 Word 可超過 60 筆。网站可能預載更多文章，工具不會因此增加收錄上限。
+## 結果與限制
 
-關鍵詞可能誤判或漏抓，請點開原文確認。未展開長文、圖片與影片內容可能漏抓。登入、驗證、平台限制或結果不足時，可能少於 60 篇；此設定無法解除平台流量限制。Ctrl+C 中止會嘗試保存已取得的資料。
+Word 只放編號與網址；results.json、results.html、results.txt 和 raw.json 為當次資料及診斷，下次會覆寫。累積連結與登入狀態只留本機，不上傳 GitHub。
 
-## API 模式
+負評依關鍵詞初篩，可能誤判或漏抓，請開原文確認。未展開長文、圖片、影片及未載入留言可能漏抓。
 
-設定具 threads_keyword_search 權限的本機環境變數 THREADS_ACCESS_TOKEN 後，執行 python threads_irent.py --source api --max-posts 60。請勿分享 Token 或登入資料。
+API 模式需設定具 threads_keyword_search 權限的環境變數 THREADS_ACCESS_TOKEN，再使用 --source api。不要分享 Token 或 .threads-profile。
 
 ## 測試
 
