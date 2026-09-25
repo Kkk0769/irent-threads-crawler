@@ -1,4 +1,4 @@
-"""Simple Word report: numbered comment, then its clickable URL."""
+"""Cumulative Word list containing only numbered, clickable post URLs."""
 import re
 
 from docx import Document
@@ -26,16 +26,9 @@ def export_word(rows, path, status, scanned_count):
     doc.styles['Normal'].font.size = Pt(11)
     doc.styles['Normal'].paragraph_format.line_spacing = 1.25
     doc.styles['Title'].font.size = Pt(20)
-    doc.add_paragraph('iRent 負面評論整理', style='Title')
-    doc.add_paragraph(f'讀取 {scanned_count} 篇貼文，篩出 {len(rows)} 篇疑似負評。{status}。')
-    doc.add_paragraph('依找到的順序排列。評論為頁面取得的文字，可能未展開全文；請由連結確認內容與語意。')
     for index, row in enumerate(rows, 1):
-        content = clean_text(row.get('title_text') or row['text'])
-        paragraph = doc.add_paragraph(f'{index}. {content}')
-        paragraph.paragraph_format.keep_with_next = True
-        paragraph.paragraph_format.space_after = Pt(3)
-        link_paragraph = doc.add_paragraph()
-        link_paragraph.paragraph_format.space_after = Pt(16)
+        link_paragraph = doc.add_paragraph(f'{index}. ')
+        link_paragraph.paragraph_format.space_after = Pt(10)
         hyperlink = OxmlElement('w:hyperlink')
         hyperlink.set(qn('r:id'), doc.part.relate_to(row['permalink'], RT.HYPERLINK, is_external=True))
         run = OxmlElement('w:r')
@@ -51,4 +44,6 @@ def export_word(rows, path, status, scanned_count):
         link_paragraph._p.append(hyperlink)
     if not rows:
         doc.add_paragraph('本次未篩出疑似負評，不代表 Threads 上沒有相關評論。')
-    doc.save(path)
+    temporary = path.with_name(path.stem + '.tmp.docx')
+    doc.save(temporary)
+    temporary.replace(path)

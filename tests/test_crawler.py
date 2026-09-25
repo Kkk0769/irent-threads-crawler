@@ -42,9 +42,32 @@ class CrawlerTests(unittest.TestCase):
             export_word([{'text': content, 'permalink': url}], path, '完成', 1)
             doc = Document(path)
             paragraphs = doc.paragraphs
-            index = next(i for i, p in enumerate(paragraphs) if content in p.text)
-            self.assertIn(url, paragraphs[index + 1]._p.xml)
+            self.assertEqual(len(paragraphs), 1)
+            self.assertTrue(paragraphs[0].text.startswith('1. '))
+            self.assertNotIn(content, doc.element.xml)
+            self.assertIn(url, paragraphs[0]._p.xml)
             self.assertTrue(any(r.target_ref == url for r in doc.part.rels.values()))
+
+    def test_history_migration_dedup_and_continuation(self):
+        def row(index):
+            return {'permalink': f'https://www.threads.com/@a/post/P{index}'}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / 'results.json').write_text(json.dumps({'results': [row(i) for i in range(5)]}), encoding='utf-8')
+            result = crawler.update_link_history([row(4), row(5)], output)
+            self.assertEqual(len(result), 6)
+            self.assertEqual(result[-1]['number'], 6)
+            self.assertEqual(crawler.update_link_history([], output), result)
+            result = crawler.update_link_history([row(5), row(6)], output)
+            self.assertEqual(result[-1]['number'], 7)
+
+    def test_corrupt_history_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'link_history.json'
+            path.write_text('broken', encoding='utf-8')
+            with self.assertRaises(RuntimeError):
+                crawler.update_link_history([], Path(directory))
+            self.assertEqual(path.read_text(encoding='utf-8'), 'broken')
 
     def test_canonical_and_dedup(self):
         url = 'https://www.threads.net/@person/post/ABC?x=1'

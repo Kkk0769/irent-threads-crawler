@@ -214,8 +214,39 @@ def browser_collect(args, raw, warnings):
             context.close()
 
 
+def update_link_history(rows, output):
+    """Persist links before replacing current-run files; migrate earlier results."""
+    history_path = output / 'link_history.json'
+    source = history_path if history_path.exists() else output / 'results.json'
+    previous = []
+    if source.exists():
+        try:
+            payload = json.loads(source.read_text(encoding='utf-8'))
+            previous = payload['results']
+            if not isinstance(previous, list):
+                raise ValueError('results must be a list')
+        except (ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError(f'歷史紀錄 {source.name} 無法讀取，為避免遺失舊連結，已停止匯出。') from exc
+    merged, seen = [], set()
+    for item in previous + rows:
+        if not isinstance(item, dict):
+            raise RuntimeError('歷史紀錄格式錯誤，已停止匯出以保留舊資料。')
+        url = canonical_url(item.get('permalink', ''))
+        if not url:
+            raise RuntimeError('歷史紀錄含無效網址，已停止匯出以保留舊資料。')
+        if post_key(url) in seen:
+            continue
+        seen.add(post_key(url))
+        merged.append({'number': len(merged) + 1, 'permalink': url})
+    temporary = output / 'link_history.tmp'
+    temporary.write_text(json.dumps({'results': merged}, ensure_ascii=False, indent=2), encoding='utf-8')
+    temporary.replace(history_path)
+    return merged
+
+
 def export(raw, rows, warnings, output, status):
     output.mkdir(parents=True, exist_ok=True)
+    history = update_link_history(rows, output)
     metadata = {'status': status, 'collected_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
                 'raw_count': len(raw), 'result_count': len(rows), 'warnings': warnings,
                 'ordering': '首次找到的順序；非全站時間排序', 'results': rows}
@@ -236,7 +267,7 @@ def export(raw, rows, warnings, output, status):
     lines.extend(['注意：關鍵詞篩選需人工確認，不保證完整。', *warnings])
     (output / 'results.txt').write_text('\n'.join(lines), encoding='utf-8')
     from word_export import export_word
-    export_word(rows, output / 'results.docx', status, len(raw))
+    export_word(history, output / 'results.docx', status, len(raw))
 
 
 def positive(value):
@@ -256,7 +287,7 @@ def main():
     parser.add_argument('--negative-word', action='append', default=[], help='新增負評關鍵詞')
     parser.add_argument('--scrolls', type=positive, default=15)
     parser.add_argument('--pages', type=positive, default=5)
-    parser.add_argument('--max-posts', type=positive, default=30, help='跨搜尋詞合計讀取上限，去重後計算，預設 30 篇（非負評數量）')
+    parser.add_argument('--max-posts', type=positive, default=60, help='跨搜尋詞合計讀取上限，去重後計算，預設 60 篇（非負評數量）')
     parser.add_argument('--delay', type=positive, default=3)
     parser.add_argument('--output', type=Path, default=ROOT / 'output')
     args = parser.parse_args()
@@ -281,6 +312,9 @@ def main():
         status = '未取得文章（無法據此判定沒有負評）'
     try:
         export(raw, rows, warnings, args.output.resolve(), status)
+    except RuntimeError as exc:
+        print(str(exc))
+        return 1
     except (ImportError, PermissionError) as exc:
         print('Word 匯出失敗：請確認已安裝 requirements.txt 的套件，並關閉正在開啟的 results.docx 後重試。其他格式已保存。')
         return 1
